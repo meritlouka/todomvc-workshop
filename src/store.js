@@ -1,31 +1,51 @@
-let uniqueID = 1;
-/* HOT MODULE SPECIFIC
- * Since hot reload blows away class instances, storage object is
- * moved outside of the class.
- */
-let memoryStorage = {};
+const TODOS = "todos";
+
+const openDatabase = (name) =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(TODOS, { keyPath: "id" });
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+
+const readAll = (db) =>
+  new Promise((resolve, reject) => {
+    const request = db.transaction(TODOS).objectStore(TODOS).getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+
+const copy = (value) => JSON.parse(JSON.stringify(value));
 
 /**
- * Creates a new client side storage object and will create an empty
- * collection if no collection already exists.
+ * Creates a new client side storage object backed by IndexedDB. Todos are
+ * loaded once into memory so reads stay synchronous; every change is written
+ * through to IndexedDB.
  *
  * @param {string} name The name of our DB we want to use
- * @param {function} callback Our fake DB uses callbacks because in
- * real life you probably would be making AJAX calls
+ * @param {function} callback Fires with all todos once they are loaded
  */
 export class Store {
   constructor(name, callback) {
-    this._dbName = name;
+    this._todos = [];
+    this._db = null;
 
-    if (!memoryStorage[name]) {
-      const data = {
-        todos: [],
-      };
+    openDatabase(name)
+      .then(async (db) => {
+        this._db = db;
+        this._todos = await readAll(db);
+      })
+      .catch((error) => {
+        // Without IndexedDB (private mode, blocked storage) todos live in memory only.
+        console.warn("IndexedDB unavailable, todos will not survive a reload.", error);
+      })
+      .then(() => {
+        if (callback) callback(copy(this._todos));
+      });
+  }
 
-      memoryStorage[name] = JSON.stringify(data);
-    }
-
-    if (callback) callback(JSON.parse(memoryStorage[name]));
+  _write(change) {
+    if (this._db) change(this._db.transaction(TODOS, "readwrite").objectStore(TODOS));
   }
 
   /**
@@ -44,10 +64,8 @@ export class Store {
   find(query, callback) {
     if (!callback) return;
 
-    const { todos } = JSON.parse(memoryStorage[this._dbName]);
-
     callback(
-      todos.filter((todo) => {
+      copy(this._todos).filter((todo) => {
         for (let q in query) {
           if (query[q] !== todo[q]) return false;
         }
@@ -65,7 +83,7 @@ export class Store {
   findAll(callback) {
     if (!callback) return;
 
-    callback(JSON.parse(memoryStorage[this._dbName]).todos);
+    callback(copy(this._todos));
   }
 
   /**
@@ -77,8 +95,7 @@ export class Store {
    * @param {number} id An optional param to enter an ID of an item to update
    */
   save(updateData, callback, id) {
-    const data = JSON.parse(memoryStorage[this._dbName]);
-    const { todos } = data;
+    const todos = this._todos;
 
     // If an ID was actually given, find the item and update each property
     if (id) {
@@ -86,19 +103,18 @@ export class Store {
         if (todos[i].id === id) {
           for (let key in updateData) todos[i][key] = updateData[key];
 
+          this._write((objectStore) => objectStore.put(todos[i]));
           break;
         }
       }
 
-      memoryStorage[this._dbName] = JSON.stringify(data);
-
-      if (callback) callback(JSON.parse(memoryStorage[this._dbName]).todos);
+      if (callback) callback(copy(todos));
     } else {
-      // Generate an ID
-      updateData.id = uniqueID++;
+      // Continue after the highest stored ID so reloads never reuse one.
+      updateData.id = todos.reduce((max, todo) => Math.max(max, todo.id), 0) + 1;
 
-      todos.push(updateData);
-      memoryStorage[this._dbName] = JSON.stringify(data);
+      todos.push(copy(updateData));
+      this._write((objectStore) => objectStore.put(updateData));
 
       if (callback) callback([updateData]);
     }
@@ -111,8 +127,7 @@ export class Store {
    * @param {function} callback The callback to fire after saving
    */
   remove(id, callback) {
-    const data = JSON.parse(memoryStorage[this._dbName]);
-    const { todos } = data;
+    const todos = this._todos;
 
     for (let i = 0; i < todos.length; i++) {
       if (todos[i].id === id) {
@@ -121,9 +136,9 @@ export class Store {
       }
     }
 
-    memoryStorage[this._dbName] = JSON.stringify(data);
+    this._write((objectStore) => objectStore.delete(id));
 
-    if (callback) callback(JSON.parse(memoryStorage[this._dbName]).todos);
+    if (callback) callback(copy(todos));
   }
 
   /**
@@ -132,9 +147,10 @@ export class Store {
    * @param {function} callback The callback to fire after dropping the data
    */
   drop(callback) {
-    memoryStorage[this._dbName] = JSON.stringify({ todos: [] });
+    this._todos = [];
+    this._write((objectStore) => objectStore.clear());
 
-    if (callback) callback(JSON.parse(memoryStorage[this._dbName]).todos);
+    if (callback) callback([]);
   }
 }
 
