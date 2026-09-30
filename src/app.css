@@ -1,0 +1,34 @@
+/* Room on the right of each row for Edit, Delete and the × button. */
+.todo-list li label {
+  padding-right: 190px;
+}
+
+.todo-list li .actions {
+  position: absolute;
+  top: 0;
+  right: 55px;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.todo-list li .actions button {
+  padding: 4px 10px;
+  border: 1px solid #d9d9d9;
+  border-radius: 3px;
+  font-size: 14px;
+  color: #484848;
+  cursor: pointer;
+}
+
+.todo-list li .actions button:hover,
+.todo-list li .actions button:focus-visible {
+  border-color: #b83f45;
+  color: #b83f45;
+}
+
+/* Keyboard users can reach the × too, not only mouse users on hover. */
+.todo-list li:focus-within .destroy {
+  display: block;
+}

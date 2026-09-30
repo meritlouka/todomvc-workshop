@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import Controller from "../src/controller.js";
+import Template from "../src/template.js";
+import View from "../src/view.js";
 
 let Store;
 let Model;
@@ -138,5 +142,63 @@ describe("persistence across reloads", () => {
     reloaded.read(onRead);
     expect(onRead).toHaveBeenCalledExactlyOnceWith([{ id: 1, title: "Offline", completed: false }]);
     expect(console.warn).toHaveBeenCalledOnce();
+  });
+});
+
+describe("edit and delete buttons", () => {
+  const rows = () => [...document.querySelectorAll(".todo-list li")];
+  const row = (title) => rows().find((li) => li.querySelector("label").textContent === title);
+  const titles = () => {
+    const onRead = vi.fn();
+    model.read(onRead);
+    return onRead.mock.calls[0][0].map((todo) => todo.title);
+  };
+
+  beforeEach(() => {
+    document.documentElement.innerHTML = readFileSync("index.html", "utf8");
+    const controller = new Controller(model, new View(new Template()));
+    controller.setView("");
+    controller.addItem("Buy milk");
+    controller.addItem('Say "hi"');
+  });
+
+  it("shows an Edit and a Delete button on every todo, named after it", () => {
+    const names = rows().flatMap((li) =>
+      [...li.querySelectorAll(".actions button")].map((button) =>
+        button.getAttribute("aria-label"),
+      ),
+    );
+    expect(names).toEqual(['Edit Say "hi"', 'Delete Say "hi"', "Edit Buy milk", "Delete Buy milk"]);
+  });
+
+  it("opens the edit field from the Edit button and saves on Enter", () => {
+    row("Buy milk").querySelector(".edit-btn").click();
+
+    const li = row("Buy milk");
+    const input = li.querySelector("input.edit");
+    expect(li.classList).toContain("editing");
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("Buy milk");
+
+    input.value = "Buy oat milk";
+    input.dispatchEvent(new KeyboardEvent("keypress", { keyCode: 13, bubbles: true }));
+
+    expect(row("Buy oat milk").classList).not.toContain("editing");
+    expect(titles()).toEqual(["Buy oat milk", 'Say "hi"']);
+  });
+
+  it("removes the todo from the list and the model with the Delete button", () => {
+    row("Buy milk").querySelector(".delete-btn").click();
+
+    expect(rows().map((li) => li.querySelector("label").textContent)).toEqual(['Say "hi"']);
+    expect(titles()).toEqual(['Say "hi"']);
+  });
+
+  it("still starts editing on double-click", () => {
+    row("Buy milk")
+      .querySelector("label")
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+
+    expect(row("Buy milk").classList).toContain("editing");
   });
 });

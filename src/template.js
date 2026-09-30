@@ -21,6 +21,10 @@ const createTodoItem = ({ id, title, completed, checked }) => `
     <div class="view">
         <input class="toggle" type="checkbox" ${checked}>
         <label>${title}</label>
+        <div class="actions">
+            <button class="edit-btn" type="button" aria-label="Edit ${title}">Edit</button>
+            <button class="delete-btn" type="button" aria-label="Delete ${title}">Delete</button>
+        </div>
         <button class="destroy"></button>
     </div>
 </li>

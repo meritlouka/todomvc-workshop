@@ -157,9 +157,13 @@ export default class View {
         $delegate(this.$todoList, "li label", "dblclick", (e) =>
           handler({ id: _itemId(e.target) }),
         );
+        $delegate(this.$todoList, ".edit-btn", "click", (e) => handler({ id: _itemId(e.target) }));
         break;
       case "itemRemove":
         $delegate(this.$todoList, ".destroy", "click", (e) => handler({ id: _itemId(e.target) }));
+        $delegate(this.$todoList, ".delete-btn", "click", (e) =>
+          handler({ id: _itemId(e.target) }),
+        );
         break;
       case "itemToggle":
         $delegate(this.$todoList, ".toggle", "click", (e) =>
