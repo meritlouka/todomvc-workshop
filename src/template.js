@@ -1,12 +1,12 @@
 "use strict";
 
 const htmlEscapes = {
-  "&": "&amp",
-  "<": "&lt",
-  ">": "&gt",
-  '"': "&quot",
-  "'": "&#x27",
-  "`": "&#x60",
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#x27;",
+  "`": "&#x60;",
 };
 
 const reUnescapedHtml = /[&<>"'`]/g;
