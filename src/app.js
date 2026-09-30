@@ -13,16 +13,14 @@ const onHashChange = () => {
   todo.controller.setView(document.location.hash);
 };
 
-// Render only after the store has loaded the saved todos from IndexedDB.
+// Render each time the store loads todos from the server.
 const onLoad = () => {
-  todo = new Todo("workshop-todos", () => {
-    onHashChange();
-    window.addEventListener("hashchange", onHashChange);
-  });
+  todo = new Todo("workshop-todos", onHashChange);
+  window.addEventListener("hashchange", onHashChange);
 };
 
-function Todo(name, onReady) {
-  this.storage = new Store(name, onReady);
+function Todo(name, onLoaded) {
+  this.storage = new Store(name, onLoaded);
   this.model = new Model(this.storage);
   this.template = new Template();
   this.view = new View(this.template);

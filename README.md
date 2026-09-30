@@ -2,7 +2,7 @@
 
 A small, plain JavaScript app for practicing how to investigate code, write a short spec or plan, implement a change with an agent, and review a pull request.
 
-The starter can add, edit, complete, filter, and delete todos. **Data lives in browser memory and disappears on reload.** There is no application backend in this starter.
+The starter can add, edit, complete, filter, and delete todos. **Todos are saved on the server in a SQLite file, `data/todos.sqlite`.** Delete that file to start with an empty list. Set `TODOS_DB` to use another file.
 
 ## Setup
 
@@ -23,7 +23,8 @@ Before the workshop, add a todo, confirm it disappears on reload, and run `npm r
 
 | Command          | Purpose                                          |
 |------------------|--------------------------------------------------|
-| `npm run dev`    | Start Vite+ on port 5173.                        |
+| `npm run dev`    | Start Vite+ and the todo API on port 5173.       |
+| `npm start`      | Serve the built app and the API on port 3000.    |
 | `npm test`       | Run the baseline tests.                          |
 | `npm run verify` | Check formatting and lint, run tests, and build. |
 | `npm run format` | Format files.                                    |
@@ -35,9 +36,13 @@ Use npm and keep `package-lock.json`. If port 5173 is busy, run `npm run dev -- 
 - `src/app.js`: connects the app.
 - `src/controller.js`: user actions and rendering.
 - `src/model.js`: todo operations and counts.
-- `src/store.js`: in-memory storage.
+- `src/store.js`: keeps todos in memory and saves them through the API.
 - `src/view.js`, `src/template.js`, `src/helpers.js`: DOM, markup, and events.
+- `server/db.js`: the SQLite database (`node:sqlite`).
+- `server/api.js`: the `/api/todos` JSON API.
+- `server/index.js`: the standalone server behind `npm start`.
 - `tests/todos.test.js`: baseline behavior checks.
+- `tests/server.test.js`: API and database checks.
 
 ## Agent skills
 

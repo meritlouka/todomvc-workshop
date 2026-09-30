@@ -1,51 +1,68 @@
-const TODOS = "todos";
+const API = "/api/todos";
 
-const openDatabase = (name) =>
-  new Promise((resolve, reject) => {
-    const request = indexedDB.open(name, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(TODOS, { keyPath: "id" });
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+const request = async (method, path = "", body) => {
+  const options = { method };
+  if (body) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(body);
+  }
 
-const readAll = (db) =>
-  new Promise((resolve, reject) => {
-    const request = db.transaction(TODOS).objectStore(TODOS).getAll();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+  const response = await fetch(`${API}${path}`, options);
+
+  if (!response.ok) throw new Error(`${method} ${API}${path} failed with ${response.status}`);
+
+  return response.status === 204 ? undefined : response.json();
+};
 
 const copy = (value) => JSON.parse(JSON.stringify(value));
 
 /**
- * Creates a new client side storage object backed by IndexedDB. Todos are
- * loaded once into memory so reads stay synchronous; every change is written
- * through to IndexedDB.
+ * Creates a client side storage object backed by the server's todo API.
+ * Todos are loaded into memory so reads stay synchronous; every change is
+ * sent to the server, one request at a time and in order.
  *
- * @param {string} name The name of our DB we want to use
- * @param {function} callback Fires with all todos once they are loaded
+ * @param {string} name Unused, kept so the Store API stays the same
+ * @param {function} callback Fires with all todos each time they are
+ * loaded from the server: once on start, and again after a failed save
  */
 export class Store {
   constructor(name, callback) {
     this._todos = [];
-    this._db = null;
+    this._onLoad = callback;
+    this._writes = Promise.resolve();
 
-    openDatabase(name)
-      .then(async (db) => {
-        this._db = db;
-        this._todos = await readAll(db);
+    this._load();
+  }
+
+  _load() {
+    return request("GET")
+      .then((todos) => {
+        this._todos = todos;
       })
-      .catch((error) => {
-        // Without IndexedDB (private mode, blocked storage) todos live in memory only.
-        console.warn("IndexedDB unavailable, todos will not survive a reload.", error);
-      })
+      .catch((error) => console.error("Could not load todos from the server.", error))
       .then(() => {
-        if (callback) callback(copy(this._todos));
+        if (this._onLoad) this._onLoad(copy(this._todos));
       });
   }
 
-  _write(change) {
-    if (this._db) change(this._db.transaction(TODOS, "readwrite").objectStore(TODOS));
+  // A failed save reloads from the server so the page never shows
+  // something the server doesn't have.
+  _sync(method, path, body) {
+    const write = this._writes.then(() => request(method, path, body));
+
+    this._writes = write.catch((error) => {
+      console.error("Could not save to the server, reloading todos.", error);
+      return this._load();
+    });
+
+    return write;
+  }
+
+  /**
+   * Resolves once every pending change has reached the server.
+   */
+  whenSaved() {
+    return this._writes;
   }
 
   /**
@@ -103,20 +120,21 @@ export class Store {
         if (todos[i].id === id) {
           for (let key in updateData) todos[i][key] = updateData[key];
 
-          this._write((objectStore) => objectStore.put(todos[i]));
+          this._sync("PATCH", `/${id}`, updateData);
           break;
         }
       }
 
       if (callback) callback(copy(todos));
     } else {
-      // Continue after the highest stored ID so reloads never reuse one.
-      updateData.id = todos.reduce((max, todo) => Math.max(max, todo.id), 0) + 1;
-
-      todos.push(copy(updateData));
-      this._write((objectStore) => objectStore.put(updateData));
-
-      if (callback) callback([updateData]);
+      // New todos wait for the server, which hands out the ID.
+      this._sync("POST", "", updateData).then(
+        (todo) => {
+          this._todos.push(todo);
+          if (callback) callback([copy(todo)]);
+        },
+        () => {}, // _sync already logged it and reloaded
+      );
     }
   }
 
@@ -132,11 +150,10 @@ export class Store {
     for (let i = 0; i < todos.length; i++) {
       if (todos[i].id === id) {
         todos.splice(i, 1);
+        this._sync("DELETE", `/${id}`);
         break;
       }
     }
-
-    this._write((objectStore) => objectStore.delete(id));
 
     if (callback) callback(copy(todos));
   }
@@ -148,7 +165,7 @@ export class Store {
    */
   drop(callback) {
     this._todos = [];
-    this._write((objectStore) => objectStore.clear());
+    this._sync("DELETE");
 
     if (callback) callback([]);
   }

@@ -1,66 +1,91 @@
 import { readFileSync } from "node:fs";
-import { IDBFactory } from "fake-indexeddb";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { createServer } from "node:http";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { createApiHandler } from "../server/api.js";
+import { openDb } from "../server/db.js";
 import Controller from "../src/controller.js";
+import Model from "../src/model.js";
+import Store from "../src/store.js";
 import Template from "../src/template.js";
 import View from "../src/view.js";
 
-let Store;
-let Model;
+const realFetch = globalThis.fetch;
+
+let db;
+let server;
 let store;
 let model;
 
-const openStore = (StoreClass) =>
+const openStore = (onLoad) =>
   new Promise((resolve) => {
-    const opened = new StoreClass("test-todos", () => resolve(opened));
+    const opened = new Store("test-todos", (todos) => {
+      if (onLoad) onLoad(todos);
+      resolve(opened);
+    });
   });
 
+const createTodo = (title, target = model) =>
+  new Promise((resolve) => target.create(title, ([todo]) => resolve(todo)));
+
+const readAll = (target = model) => {
+  const onRead = vi.fn();
+  target.read(onRead);
+  return onRead.mock.calls[0][0];
+};
+
+// Every test gets its own API on a random port, backed by an in-memory database.
 beforeEach(async () => {
-  globalThis.indexedDB = new IDBFactory();
-  vi.resetModules();
-  ({ default: Store } = await import("../src/store.js"));
-  ({ default: Model } = await import("../src/model.js"));
-  store = await openStore(Store);
+  db = openDb(":memory:");
+  const handler = createApiHandler(db);
+  server = createServer((req, res) =>
+    handler(req, res, () => {
+      res.statusCode = 404;
+      res.end();
+    }),
+  );
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  vi.stubGlobal("fetch", (url, init) => realFetch(new URL(url, base), init));
+
+  store = await openStore();
   model = new Model(store);
+});
+
+afterEach(async () => {
+  await store.whenSaved();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  await new Promise((resolve) => server.close(resolve));
+  db.close();
 });
 
 describe("existing todo behavior", () => {
   it("starts with an empty list", () => {
-    const onRead = vi.fn();
-    model.read(onRead);
-    expect(onRead).toHaveBeenCalledExactlyOnceWith([]);
+    expect(readAll()).toEqual([]);
   });
 
-  it("creates trimmed titles, incomplete status, and distinct numeric IDs", () => {
-    model.create("  First task  ");
-    model.create("Second task");
-    const onRead = vi.fn();
-    model.read(onRead);
-    const [first, second] = onRead.mock.calls[0][0];
+  it("creates trimmed titles, incomplete status, and distinct numeric IDs", async () => {
+    await createTodo("  First task  ");
+    await createTodo("Second task");
+    const [first, second] = readAll();
     expect(first).toEqual({ id: expect.any(Number), title: "First task", completed: false });
     expect(second).toEqual({ id: expect.any(Number), title: "Second task", completed: false });
     expect(first.id).not.toBe(second.id);
   });
 
-  it("edits and completes the requested item without changing its neighbor", () => {
-    const onCreate = vi.fn();
-    model.create("First", onCreate);
-    model.create("Second");
-    const id = onCreate.mock.calls[0][0][0].id;
+  it("edits and completes the requested item without changing its neighbor", async () => {
+    const { id } = await createTodo("First");
+    await createTodo("Second");
     model.update(id, { title: "Updated", completed: true });
-    const onRead = vi.fn();
-    model.read(onRead);
-    expect(onRead.mock.calls[0][0]).toEqual([
+    expect(readAll()).toEqual([
       { id, title: "Updated", completed: true },
       { id: expect.any(Number), title: "Second", completed: false },
     ]);
   });
 
-  it("filters completed items and counts all items correctly", () => {
-    const onCreate = vi.fn();
-    model.create("Done", onCreate);
-    model.create("Still working");
-    const id = onCreate.mock.calls[0][0][0].id;
+  it("filters completed items and counts all items correctly", async () => {
+    const { id } = await createTodo("Done");
+    await createTodo("Still working");
     model.update(id, { completed: true });
     const onRead = vi.fn();
     model.read({ completed: true }, onRead);
@@ -70,96 +95,104 @@ describe("existing todo behavior", () => {
     expect(onCount).toHaveBeenCalledExactlyOnceWith({ active: 1, completed: 1, total: 2 });
   });
 
-  it("deletes only the requested item", () => {
-    const onCreate = vi.fn();
-    model.create("Remove me", onCreate);
-    model.create("Keep me");
-    model.remove(onCreate.mock.calls[0][0][0].id);
-    const onRead = vi.fn();
-    model.read(onRead);
-    expect(onRead).toHaveBeenCalledExactlyOnceWith([
-      { id: expect.any(Number), title: "Keep me", completed: false },
-    ]);
+  it("deletes only the requested item", async () => {
+    const { id } = await createTodo("Remove me");
+    await createTodo("Keep me");
+    model.remove(id);
+    expect(readAll()).toEqual([{ id: expect.any(Number), title: "Keep me", completed: false }]);
   });
 });
 
 describe("persistence across reloads", () => {
   const reload = async () => {
-    vi.resetModules();
-    const { default: FreshStore } = await import("../src/store.js");
-    const { default: FreshModel } = await import("../src/model.js");
-    return new FreshModel(await openStore(FreshStore));
+    await store.whenSaved();
+    return new Model(await openStore());
   };
 
   it("keeps titles and completed state after a reload", async () => {
-    const onCreate = vi.fn();
-    model.create("Done", onCreate);
-    model.create("Still working");
-    model.update(onCreate.mock.calls[0][0][0].id, { completed: true });
+    const { id } = await createTodo("Done");
+    await createTodo("Still working");
+    model.update(id, { completed: true });
 
-    const reloaded = await reload();
-    const onRead = vi.fn();
-    reloaded.read(onRead);
-    expect(onRead).toHaveBeenCalledExactlyOnceWith([
-      { id: expect.any(Number), title: "Done", completed: true },
+    expect(readAll(await reload())).toEqual([
+      { id, title: "Done", completed: true },
       { id: expect.any(Number), title: "Still working", completed: false },
     ]);
   });
 
   it("does not reuse stored IDs for todos created after a reload", async () => {
-    model.create("First");
-    model.create("Second");
+    await createTodo("First");
+    await createTodo("Second");
 
     const reloaded = await reload();
-    reloaded.create("Third");
-    const onRead = vi.fn();
-    reloaded.read(onRead);
-    const ids = onRead.mock.calls[0][0].map((todo) => todo.id);
+    await createTodo("Third", reloaded);
+    const ids = readAll(reloaded).map((todo) => todo.id);
     expect(new Set(ids).size).toBe(3);
   });
 
   it("keeps deleted todos gone after a reload", async () => {
-    const onCreate = vi.fn();
-    model.create("Remove me", onCreate);
-    model.create("Keep me");
-    model.remove(onCreate.mock.calls[0][0][0].id);
+    const { id } = await createTodo("Remove me");
+    await createTodo("Keep me");
+    model.remove(id);
 
-    const reloaded = await reload();
-    const onRead = vi.fn();
-    reloaded.read(onRead);
-    expect(onRead).toHaveBeenCalledExactlyOnceWith([
+    expect(readAll(await reload())).toEqual([
       { id: expect.any(Number), title: "Keep me", completed: false },
     ]);
   });
 
-  it("still works in memory when IndexedDB is unavailable", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    globalThis.indexedDB = undefined;
+  it("saves every change in the SQLite database", async () => {
+    const { id } = await createTodo("Buy milk");
+    model.update(id, { title: "Buy oat milk", completed: true });
+    await store.whenSaved();
 
-    const reloaded = await reload();
-    reloaded.create("Offline");
-    const onRead = vi.fn();
-    reloaded.read(onRead);
-    expect(onRead).toHaveBeenCalledExactlyOnceWith([{ id: 1, title: "Offline", completed: false }]);
-    expect(console.warn).toHaveBeenCalledOnce();
+    expect(db.list()).toEqual([{ id, title: "Buy oat milk", completed: true }]);
+  });
+});
+
+describe("server errors", () => {
+  it("starts with an empty list when the server is unreachable", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));
+
+    const offline = new Model(await openStore());
+    expect(readAll(offline)).toEqual([]);
+    expect(console.error).toHaveBeenCalledOnce();
+  });
+
+  it("reloads todos from the server when a save fails", async () => {
+    const { id } = await createTodo("Buy milk");
+    const onLoad = vi.fn();
+    const watched = await openStore(onLoad);
+    const watchedModel = new Model(watched);
+
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const passThrough = globalThis.fetch;
+    vi.stubGlobal("fetch", (url, init) =>
+      init?.method === "PATCH"
+        ? Promise.resolve(new Response(null, { status: 500 }))
+        : passThrough(url, init),
+    );
+
+    watchedModel.update(id, { completed: true });
+    expect(readAll(watchedModel)).toEqual([{ id, title: "Buy milk", completed: true }]);
+
+    await watched.whenSaved();
+    expect(console.error).toHaveBeenCalledOnce();
+    expect(onLoad).toHaveBeenCalledTimes(2);
+    expect(readAll(watchedModel)).toEqual([{ id, title: "Buy milk", completed: false }]);
   });
 });
 
 describe("edit and delete buttons", () => {
   const rows = () => [...document.querySelectorAll(".todo-list li")];
   const row = (title) => rows().find((li) => li.querySelector("label").textContent === title);
-  const titles = () => {
-    const onRead = vi.fn();
-    model.read(onRead);
-    return onRead.mock.calls[0][0].map((todo) => todo.title);
-  };
+  const titles = () => readAll().map((todo) => todo.title);
 
-  beforeEach(() => {
+  beforeEach(async () => {
     document.documentElement.innerHTML = readFileSync("index.html", "utf8");
-    const controller = new Controller(model, new View(new Template()));
-    controller.setView("");
-    controller.addItem("Buy milk");
-    controller.addItem('Say "hi"');
+    await createTodo("Buy milk");
+    await createTodo('Say "hi"');
+    new Controller(model, new View(new Template())).setView("");
   });
 
   it("shows an Edit and a Delete button on every todo, named after it", () => {
